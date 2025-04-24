@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { io } from "socket.io-client";
-import FileExplorer from '../components/FileExplorer';
+import FileExplorer from '../Components/FileExplorer.jsx';
 import EditorHeader from '../components/EditorHeader';
 import CodeEditor from '../components/CodeEditor';
 import CallPanel from '../components/CallPanel';
