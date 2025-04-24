@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { io } from "socket.io-client";
 import FileExplorer from '../Components/FileExplorer';
 import CodeEditor from '../components/CodeEditor';
-import CodeEditor from '../components/CodeEditor';
+
 import CallPanel from '../components/CallPanel';
 import TerminalPanel from '../components/TerminalPanel';
 import { Link, useNavigate, useParams } from 'react-router-dom';
