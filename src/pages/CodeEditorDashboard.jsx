@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { io } from "socket.io-client";
 import FileExplorer from '../Components/FileExplorer';
-import CodeEditor from '../components/CodeEditor';
+import CodeEditor from '../Components/CodeEditor';
 
-import CallPanel from '../components/CallPanel';
-import TerminalPanel from '../components/TerminalPanel';
+import CallPanel from '../Components/CallPanel';
+import TerminalPanel from '../Components/TerminalPanel';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 // Add these new imports
 import { Buffer as BufferPolyfill } from 'buffer';
