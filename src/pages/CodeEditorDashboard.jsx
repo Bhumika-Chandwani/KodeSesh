@@ -188,7 +188,7 @@ const verifyGitCredentials = async (token, owner, repo) => {
   // Socket connection
   useEffect(() => {
     // Create socket connection
-    const newSocket = io("http://localhost:5000", {
+    const newSocket = io("https://kodesesh-server.onrender.com", {
       transports: ["websocket", "polling"],
       upgrade: true,
       forceNew: true,
