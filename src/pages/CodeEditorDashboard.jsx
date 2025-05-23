@@ -7,7 +7,6 @@ import CallPanel from '../Components/CallPanel';
 import TerminalPanel from '../Components/TerminalPanel';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 // Add these new imports
-import { Link, useParams } from 'react-router-dom';
 import { Buffer as BufferPolyfill } from 'buffer';
 window.Buffer = BufferPolyfill;
 import * as git from 'isomorphic-git';
