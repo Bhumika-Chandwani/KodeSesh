@@ -54,7 +54,7 @@ const SignInPage = () => {
   };
 
   const handleGithubLogin = () => {
-    window.location.href = 'https://kodesesh-server.onrender.com/api/auth/github';
+    window.location.href = 'http://localhost:5000/api/auth/github';
   };
 
   const handleChange = (e) => {

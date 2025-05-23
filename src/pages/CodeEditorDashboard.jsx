@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { io } from "socket.io-client";
 import FileExplorer from '../Components/FileExplorer';
+import EditorHeader from '../Components/EditorHeader';
 import CodeEditor from '../Components/CodeEditor';
-
 import CallPanel from '../Components/CallPanel';
 import TerminalPanel from '../Components/TerminalPanel';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -188,7 +188,7 @@ const verifyGitCredentials = async (token, owner, repo) => {
   // Socket connection
   useEffect(() => {
     // Create socket connection
-    const newSocket = io("https://kodesesh-server.onrender.com", {
+    const newSocket = io("http://localhost:5000", {
       transports: ["websocket", "polling"],
       upgrade: true,
       forceNew: true,
