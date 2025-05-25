@@ -20,6 +20,8 @@ import GitAuthDialog from '../Components/GitAuthDialog';
 import PRCommandHandler from '../handlers/PRCommandHandler.js';
 import GitHubService from '../service/GitHubService.js';
 import PRReviewPanel from '../Components/PRReviewPanel';
+import { showNotification, requestNotificationPermission } from '../utils/notification.js';
+
 
 const CodeEditorDashboard = () => {
   // State management
@@ -64,6 +66,13 @@ const CodeEditorDashboard = () => {
   const [isUserHost, setIsUserHost] = useState(false);
   const [githubUser, setGithubUser] = useState(null);
   
+  
+  
+
+
+  useEffect(() => {
+  requestNotificationPermission();
+}, []);
 
 useEffect(() => {
   const checkGitHubAuth = async () => {
@@ -98,7 +107,7 @@ const fetchSessionData = async () => {
     if (!activeSessionId) return;
     
     // Fetch session data from your API
-    const response = await fetch(`https://kodesesh-server.onrender.com/api/session/${activeSessionId}`);
+    const response = await fetch(`http://localhost:5000/api/session/${activeSessionId}`);
     if (!response.ok) {
       throw new Error(`Failed to fetch session data: ${response.status}`);
     }
@@ -308,7 +317,7 @@ const verifyGitCredentials = async (token, owner, repo) => {
   // Socket connection
   useEffect(() => {
     // Create socket connection
-    const newSocket = io("https://kodesesh-server.onrender.com", {
+    const newSocket = io("http://localhost:5000", {
       transports: ["websocket", "polling"],
       upgrade: true,
       forceNew: true,
@@ -316,30 +325,19 @@ const verifyGitCredentials = async (token, owner, repo) => {
     
     setSocket(newSocket);
 
-    newSocket.on("requestPRSync", (data) => {
-  if (data.sessionId === activeSessionId) {
-    console.log("Received PR sync request from:", data.userId);
-    
-    // Share our PRs with the requester
-    if (window.PRService) {
-      const sessionPRs = window.PRService.getPRsBySession(activeSessionId);
-      
-      if (sessionPRs.length > 0) {
-        sessionPRs.forEach(pr => {
-          socket.emit("prSync", {
-            sessionId: activeSessionId,
-            eventType: 'pr-added',
-            prData: pr
-          });
-        });
-      }
-    }
-  }
-});
-    
+    window.socket = newSocket;
+    window.socketConnection = newSocket; 
+
+
     // Set up event listeners once socket is created
     newSocket.on("connect", () => {
       console.log("Connected to server with ID:", newSocket.id);
+
+       setTimeout(() => {
+    if (window.PRService) {
+      window.PRService.requestPRSync(activeSessionId);
+    }
+  }, 1000);
       
       // Join the session
       newSocket.emit("joinSession", activeSessionId);
@@ -543,6 +541,47 @@ if (user?.name) {
       }
     });
 
+
+    // ADD THIS PROPERLY - Fix the prSync handler
+  newSocket.on("prSync", (data) => {
+    console.log("📥 Frontend received PR sync event:", data);
+    
+    if (data && data.sessionId === activeSessionId) {
+      console.log("PR sync event matches current session:", data.eventType, data.prData?.id);
+      
+      // Ensure PRService handles the sync
+      if (window.PRService) {
+        window.PRService.handlePRSync(data.sessionId, data.eventType, data.prData);
+        
+        // Special handling for hosts - show notifications
+        if (data.eventType === 'pr-added' && isUserHost) {
+          console.log("Host received new PR notification");
+          
+          // Add terminal notification
+          const entry = {
+            type: 'output',
+            content: `🔔 New pull request received: "${data.prData.title}" from ${data.prData.author}`
+          };
+          setTerminalOutput(prev => [...prev, entry]);
+          
+          // Force update notifications
+          forceUpdateNotifications();
+          
+          // Show browser notification
+          showNotification(`New PR: ${data.prData.title}`, 'info');
+        }
+      }
+    }
+  });
+
+
+  // Debug: Log all PR-related events
+  newSocket.onAny((eventName, ...args) => {
+    if (eventName.includes('pr') || eventName.includes('PR')) {
+      console.log(`🔍 Socket Event: ${eventName}`, args);
+    }
+  });
+
     
 
 
@@ -638,66 +677,84 @@ if (user?.name) {
         prev.map(p => p.id.toString() === userId.toString() ? {...p, isScreenSharing: false} : p)
       );
     });
-    const improvePRSyncHandling = () => {
-  // Replace the existing prSync event handler implementation with this:
-  newSocket.on("prSync", (data) => {
-    if (data && data.sessionId === activeSessionId) {
-      console.log("Received PR sync event:", data.eventType, data.prData?.id);
+ 
+// Enhanced prSync handler that works with NATS
+newSocket.on("prSync", (data) => {
+  console.log("📥 Frontend received PR sync event:", data);
+  
+  if (data && data.sessionId === activeSessionId) {
+    console.log("PR sync event matches current session:", data.eventType, data.prData?.id);
+    
+    // Ensure PRService handles the sync
+    if (window.PRService) {
+      window.PRService.handlePRSync(data.sessionId, data.eventType, data.prData);
       
-      // Ensure we have the PRService globally
-      if (!window.PRService) {
-        console.warn("PRService not available globally, attempting to initialize");
-        try {
-          // Try to access PRService from imports
-          const prService = require('../service/PRService').default;
-          window.PRService = prService;
-        } catch (error) {
-          console.error("Could not import PRService for PR sync:", error);
-        }
-      }
-      
-      // If PRService is available, handle the sync event
-      if (window.PRService) {
-        try {
-          window.PRService.handlePRSync(data.sessionId, data.eventType, data.prData);
-          
-          // IMPORTANT: Add terminal notification for host
-          if (data.eventType === 'pr-added' && isUserHost) {
-            addToTerminal({
-              type: 'output',
-              content: `New pull request received: "${data.prData.title}" from ${data.prData.author}`
-            });
-            
-            // Visually indicate a new PR is available
-            // Auto-flash the PR button or badge (can be implemented with a state)
-            // Optionally: Auto-open the PR review panel
-            if (typeof setShowPRReviewPanel === 'function') {
-              // Flash the badge instead of auto-opening to be less intrusive
-              // setShowPRReviewPanel(true);
-              if (typeof setNewPRNotification === 'function') {
-                setNewPRNotification(true);
-                // Auto-clear after 10 seconds
-                setTimeout(() => setNewPRNotification(false), 10000);
-              }
-            }
-          }
-          
-          // Re-fetch PR list if review panel is open
-          if (showPRReviewPanel && typeof refreshPRList === 'function') {
-            refreshPRList();
-          }
-        } catch (syncError) {
-          console.error("Error handling PR sync:", syncError);
-        }
-      }
-      
-      // Force redraw of any PR notification badges
-      if (typeof forceUpdateNotifications === 'function') {
+      // Handle different event types
+      if (data.eventType === 'pr-added' && isUserHost) {
+        // Host notification for new PR
+        const entry = {
+          type: 'output',
+          content: `🔔 New pull request received: "${data.prData.title}" from ${data.prData.author}`
+        };
+        setTerminalOutput(prev => [...prev, entry]);
+        
+        showNotification(`New PR: ${data.prData.title}`, 'info');
         forceUpdateNotifications();
       }
+      
+      // NEW: Handle review notifications for PR authors
+      const currentUserId = localStorage.getItem("userId");
+      const currentUserName = user?.name || localStorage.getItem("userName") || "Anonymous";
+      
+      // Check if this is a review action and the current user is the PR author
+      if (['pr-approved', 'pr-rejected', 'pr-changes-requested'].includes(data.eventType) && 
+          (data.prData.authorId === currentUserId || data.prData.author === currentUserName)) {
+        
+        let notificationMessage = '';
+        let notificationType = 'info';
+        
+        switch (data.eventType) {
+          case 'pr-approved':
+            notificationMessage = `✅ Your PR "${data.prData.title}" has been approved by ${data.prData.reviewedBy}!`;
+            notificationType = 'success';
+            break;
+          case 'pr-rejected':
+            notificationMessage = `❌ Your PR "${data.prData.title}" has been rejected by ${data.prData.reviewedBy}.`;
+            notificationType = 'error';
+            break;
+          case 'pr-changes-requested':
+            notificationMessage = `📝 Changes requested for your PR "${data.prData.title}" by ${data.prData.reviewedBy}.`;
+            notificationType = 'warning';
+            break;
+        }
+        
+        if (notificationMessage) {
+          // Add to terminal
+          const entry = {
+            type: notificationType === 'error' ? 'error' : 'output',
+            content: notificationMessage
+          };
+          setTerminalOutput(prev => [...prev, entry]);
+          
+          // Show browser notification
+          showNotification(notificationMessage, notificationType);
+          
+          // If there are review comments, show them too
+          if (data.prData.comments) {
+            const commentEntry = {
+              type: 'output',
+              content: `Review comments: ${data.prData.comments}`
+            };
+            setTerminalOutput(prev => [...prev, commentEntry]);
+          }
+          
+          // Force update notifications
+          forceUpdateNotifications();
+        }
+      }
     }
-  });
-  
+  }
+});
   // Immediately request PR sync when joining
   // This should happen after socket connection is established
   newSocket.emit("requestPRSync", {
@@ -706,7 +763,7 @@ if (user?.name) {
   });
   
   console.log("Sent initial PR sync request for session:", activeSessionId);
-};
+
     
     return () => {
       try {
@@ -715,8 +772,12 @@ if (user?.name) {
         }
         
         if (newSocket) {
-          newSocket.disconnect();
-        }
+      newSocket.disconnect();
+      if (window.socket === newSocket) {
+        window.socket = null;
+        window.socketConnection = null;
+      }
+    }
       } catch (error) {
         console.error("Error cleaning up socket connection:", error);
       }
@@ -2398,184 +2459,307 @@ useEffect(() => {
 
   return (
     <div className="h-screen flex flex-col bg-gradient-to-br from-[#0f172a] to-[#0c0f1d] text-gray-100 overflow-hidden font-sans">
-      {/* Ambient background effect */}
-      <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxkZWZzPjxwYXR0ZXJuIGlkPSJncmlkIiB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHBhdHRlcm5Vbml0cz0idXNlclNwYWNlT25Vc2UiPjxwYXRoIGQ9Ik0gMjAgMCBMIDAgMCAwIDIwIiBmaWxsPSJub25lIiBzdHJva2U9IiMyMDM1NWEiIHN0cm9rZS13aWR0aD0iMC41Ii8+PC9wYXR0ZXJuPjwvZGVmcz48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJ1cmwoI2dyaWQpIiAvPjwvc3ZnPg==')] opacity-20 z-0 pointer-events-none"></div>
-      
-      {/* Main layout container */}
-      <div className="flex flex-1 overflow-hidden z-10 relative">
-        {/* Sidebar / File Explorer */}
-        <div 
-          className={`h-full backdrop-blur-md bg-[#0a101f]/80 border-r border-indigo-900/40 transition-all duration-300 ease-in-out
-            ${isSidebarOpen ? 'w-64' : 'w-0 opacity-0'}`}
-        >
-          {/* App Logo and Controls */}
-          <div className="flex items-center justify-between p-3 border-b border-indigo-900/30 bg-gradient-to-r from-indigo-900/40 to-blue-900/30">
-            <Link className="text-sm font-bold text-cyan-400 tracking-widest uppercase hover:text-cyan-300 transition-colors flex items-center space-x-2">
-              <span className="bg-gradient-to-r from-cyan-400 to-blue-500 p-1 rounded">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-white" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z" clipRule="evenodd" />
-                </svg>
-              </span>
-              <span className="bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-blue-500">KodeSesh</span>
-            </Link>
-            <FileExplorer.Controls toggleGitPanel={gitOperations.toggleGitPanel} />    </div>
-          
-          {/* File Tree */}
-          <div className="overflow-y-auto h-full py-2 px-1">
+    {/* Ambient background effect */}
+    <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxkZWZzPjxwYXR0ZXJuIGlkPSJncmlkIiB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHBhdHRlcm5Vbml0cz0idXNlclNwYWNlT25Vc2UiPjxwYXRoIGQ9Ik0gMjAgMCBMIDAgMCAwIDIwIiBmaWxsPSJub25lIiBzdHJva2U9IiMyMDM1NWEiIHN0cm9rZS13aWR0aD0iMC41Ii8+PC9wYXR0ZXJuPjwvZGVmcz48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJ1cmwoI2dyaWQpIiAvPjwvc3ZnPg==')] opacity-20 z-0 pointer-events-none"></div>
+    
+    {/* Main layout container - adjusted to account for status bar */}
+    <div className="flex flex-1 overflow-hidden z-10 relative min-h-0">
+      {/* Sidebar / File Explorer */}
+      <div 
+        className={`h-full backdrop-blur-md bg-[#0a101f]/80 border-r border-indigo-900/40 transition-all duration-300 ease-in-out
+          ${isSidebarOpen ? 'w-64' : 'w-0 opacity-0'}`}
+      >
+        {/* App Logo and Controls */}
+        <div className="flex items-center justify-between p-3 border-b border-indigo-900/30 bg-gradient-to-r from-indigo-900/40 to-blue-900/30">
+          <Link className="text-sm font-bold text-cyan-400 tracking-widest uppercase hover:text-cyan-300 transition-colors flex items-center space-x-2">
+            <span className="bg-gradient-to-r from-cyan-400 to-blue-500 p-1 rounded">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-white" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z" clipRule="evenodd" />
+              </svg>
+            </span>
+            <span className="bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-blue-500">KodeSesh</span>
+          </Link>
+          <FileExplorer.Controls toggleGitPanel={gitOperations.toggleGitPanel} />
+        </div>
+        
+        {/* File Tree - with proper overflow handling */}
+        <div className="flex-1 overflow-y-auto py-2 px-1 min-h-0">
           <FileExplorer 
-  fileStructure={fileStructure} 
-  selectedFile={selectedFile}
-  onFileSelect={setSelectedFile}
-  currentLanguage={currentLanguage}  
-  gitOperations={gitOperations}
-  currentBranch={currentBranch}
-  isHost={isUserHost} 
-  participants={enhancedParticipants}
-  isGitAuthenticated={isGitAuthenticated}
-  githubUser={githubUser} 
-  sessionId={activeSessionId}
-  onViewPR={(prId) => {
-    // Just view PR details in terminal
-    if (prCommandHandler.current) {
-      prCommandHandler.current.handleCommand('status', [prId]);
-    }
-  }}
-  onReviewPR={(prId) => {
-    // Open the PR review panel
-    setShowPRReviewPanel(true);
-  }}
-  
-/>
-          </div>
-        </div>
-
-        {/* Main Content Area */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Editor Header - Properly implemented */}
-          <EditorHeader 
-            isSidebarOpen={isSidebarOpen}
-            setIsSidebarOpen={setIsSidebarOpen}
-            isTerminalOpen={isTerminalOpen}
-            toggleTerminal={toggleTerminal}
+            fileStructure={fileStructure} 
             selectedFile={selectedFile}
-            isCallPanelOpen={isCallPanelOpen}
-            setIsCallPanelOpen={setIsCallPanelOpen}
-            participantsCount={activeParticipants.length}
-            currentLanguage={currentLanguage}
-            setCurrentLanguage={setCurrentLanguage}
-            executeCode={executeCode}    
-            isExecuting={isExecuting}
-            socket={socket}
-            activeSessionId={activeSessionId}
-            isHost={isUserHost}
-            onEndSession={handleEndSession}
-             onOpenPRReviewPanel={() => setShowPRReviewPanel(true)}
+            onFileSelect={setSelectedFile}
+            currentLanguage={currentLanguage}  
+            gitOperations={gitOperations}
+            currentBranch={currentBranch}
+            isHost={isUserHost} 
+            participants={enhancedParticipants}
+            isGitAuthenticated={isGitAuthenticated}
+            githubUser={githubUser} 
+            sessionId={activeSessionId}
+            onViewPR={(prId) => {
+              if (prCommandHandler.current) {
+                prCommandHandler.current.handleCommand('status', [prId]);
+              }
+            }}
+            onReviewPR={(prId) => {
+              setShowPRReviewPanel(true);
+            }}
           />
-
-
-          {/* Main Content with Editor and Call Panel */}
-          <div className="flex-1 flex overflow-hidden">
-            {/* Editor and Terminal Container */}
-            <div className={`flex flex-col transition-all duration-300 ${isCallPanelOpen ? 'w-8/12' : 'w-full'}`}>
-              {/* Code Editor */}
-              <div className={`flex-1 ${isTerminalOpen ? 'h-3/4' : 'h-full'} bg-[#0b111d]/90 backdrop-blur-md relative`}>
-                {/* Line Numbers Decoration (Visual Only) */}
-                <div className="absolute left-0 top-0 bottom-0 w-12 bg-gradient-to-b from-blue-900/20 to-indigo-900/20 border-r border-indigo-900/30 z-0 hidden md:block">
-                  <div className="h-full flex flex-col items-end pr-2 pt-1 text-cyan-500/50 text-xs">
-                    {Array.from({ length: 30 }).map((_, i) => (
-                      <div key={i} className="leading-6">{i + 1}</div>
-                    ))}
-                  </div>
-                </div>
-                
-                {/* Editor Content */}
-                <div className={`h-full ${isTerminalOpen ? 'border-b border-indigo-900/30' : ''}`}>
-  {(() => {
-    try {
-      return (
-        <CodeEditor 
-          code={code || "// Start writing your code here!"} // Add fallback
-          onChange={handleCodeChange} 
-          language={currentLanguage}
-          gitStatus={gitStatus}
-          activeTypist={activeTypist}
-        />
-      );
-    } catch (error) {
-      console.error("Error rendering CodeEditor:", error);
-      // Fallback UI
-      return (
-        <div className="h-full flex items-center justify-center flex-col text-red-400">
-          <div className="mb-4">Error loading editor. Attempting to recover...</div>
-          <button 
-            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-            onClick={() => window.location.reload()}
-          >
-            Reload Page
-          </button>
         </div>
-      );
-    }
-  })()}
-</div>
-              </div>
+      </div>
 
-              {/* Terminal Panel */}
-              {isTerminalOpen && (
-                <div className="border-t border-cyan-900/30 bg-[#0a1121]/90 backdrop-blur-md" style={{ height: `${terminalHeight}px` }}>
-                  <TerminalPanel 
-                    isOpen={isTerminalOpen}
-                    onClose={toggleTerminal}
-                    height={terminalHeight}
-                    onHeightChange={setTerminalHeight}
-                    terminalHistory={terminalOutput}
-                    setTerminalHistory={setTerminalOutput}
-                    onClear={clearTerminal}
-                    onCommand={handleTerminalCommand}
-                    socket={socket}
-                    sessionId={activeSessionId}
-                  />
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+        {/* Editor Header */}
+        <EditorHeader 
+          isSidebarOpen={isSidebarOpen}
+          setIsSidebarOpen={setIsSidebarOpen}
+          isTerminalOpen={isTerminalOpen}
+          toggleTerminal={toggleTerminal}
+          selectedFile={selectedFile}
+          isCallPanelOpen={isCallPanelOpen}
+          setIsCallPanelOpen={setIsCallPanelOpen}
+          participantsCount={activeParticipants.length}
+          currentLanguage={currentLanguage}
+          setCurrentLanguage={setCurrentLanguage}
+          executeCode={executeCode}    
+          isExecuting={isExecuting}
+          socket={socket}
+          activeSessionId={activeSessionId}
+          isHost={isUserHost}
+          onEndSession={handleEndSession}
+          onOpenPRReviewPanel={() => setShowPRReviewPanel(true)}
+        />
+
+        {/* Main Content with Editor and Call Panel */}
+        <div className="flex-1 flex overflow-hidden min-h-0">
+          {/* Editor and Terminal Container */}
+          <div className={`flex flex-col transition-all duration-300 min-h-0 ${isCallPanelOpen ? 'w-8/12' : 'w-full'}`}>
+            {/* Code Editor */}
+            <div className={`flex-1 bg-[#0b111d]/90 backdrop-blur-md relative min-h-0 ${isTerminalOpen ? '' : 'h-full'}`}>
+              {/* Line Numbers Decoration */}
+              <div className="absolute left-0 top-0 bottom-0 w-12 bg-gradient-to-b from-blue-900/20 to-indigo-900/20 border-r border-indigo-900/30 z-0 hidden md:block">
+                <div className="h-full flex flex-col items-end pr-2 pt-1 text-cyan-500/50 text-xs">
+                  {Array.from({ length: 30 }).map((_, i) => (
+                    <div key={i} className="leading-6">{i + 1}</div>
+                  ))}
                 </div>
-              )}
+              </div>
+              
+              {/* Editor Content */}
+              <div className={`h-full ${isTerminalOpen ? 'border-b border-indigo-900/30' : ''}`}>
+                {(() => {
+                  try {
+                    return (
+                      <CodeEditor 
+                        code={code || "// Start writing your code here!"} 
+                        onChange={handleCodeChange} 
+                        language={currentLanguage}
+                        gitStatus={gitStatus}
+                        activeTypist={activeTypist}
+                      />
+                    );
+                  } catch (error) {
+                    console.error("Error rendering CodeEditor:", error);
+                    return (
+                      <div className="h-full flex items-center justify-center flex-col text-red-400">
+                        <div className="mb-4">Error loading editor. Attempting to recover...</div>
+                        <button 
+                          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                          onClick={() => window.location.reload()}
+                        >
+                          Reload Page
+                        </button>
+                      </div>
+                    );
+                  }
+                })()}
+              </div>
             </div>
 
-            {/* Call Panel */}
-            {isCallPanelOpen && (
-              <div className="w-4/12 border-l border-indigo-900/40 bg-gradient-to-b from-[#0c1529]/90 to-[#0a101f]/90 backdrop-blur-md">
-                <CallPanel 
-                  participants={activeParticipants}
-                  isAudioOn={isAudioOn}
-                  isVideoOn={isVideoOn}
-                  toggleAudio={toggleAudio}
-                  toggleVideo={toggleVideo}
+            {/* Terminal Panel - with proper height constraints */}
+            {isTerminalOpen && (
+              <div 
+                className="border-t border-cyan-900/30 bg-[#0a1121]/90 backdrop-blur-md flex-shrink-0" 
+                style={{ height: `${Math.min(terminalHeight, 400)}px` }}
+              >
+                <TerminalPanel 
+                  isOpen={isTerminalOpen}
+                  onClose={toggleTerminal}
+                  height={Math.min(terminalHeight, 400)}
+                  onHeightChange={(height) => setTerminalHeight(Math.min(height, 400))}
+                  terminalHistory={terminalOutput}
+                  setTerminalHistory={setTerminalOutput}
+                  onClear={clearTerminal}
+                  onCommand={handleTerminalCommand}
                   socket={socket}
-                  activeSessionId={activeSessionId}
+                  sessionId={activeSessionId}
                 />
               </div>
             )}
           </div>
+
+          {/* Call Panel */}
+          {isCallPanelOpen && (
+            <div className="w-4/12 border-l border-indigo-900/40 bg-gradient-to-b from-[#0c1529]/90 to-[#0a101f]/90 backdrop-blur-md min-h-0">
+              <CallPanel 
+                participants={activeParticipants}
+                isAudioOn={isAudioOn}
+                isVideoOn={isVideoOn}
+                toggleAudio={toggleAudio}
+                toggleVideo={toggleVideo}
+                socket={socket}
+                activeSessionId={activeSessionId}
+              />
+            </div>
+          )}
         </div>
       </div>
-      
-      {/* Status Bar */}
-      {/* <div className="h-6 bg-gradient-to-r from-cyan-600 to-blue-700 text-white text-xs flex items-center px-4 justify-between border-t border-cyan-500/50 shadow-[0_-5px_15px_rgba(6,182,212,0.2)] z-10">
-        <div className="flex space-x-4">
-          <div className="flex items-center">
-            <div className="h-2 w-2 rounded-full bg-green-400 mr-2 shadow-[0_0_5px_#4ade80]"></div>
-            <span>Session: {activeSessionId}</span>
+    </div>
+    
+    {/* Status Bar - now properly positioned */}
+    {/* Status Bar - Enhanced Futuristic Design */}
+<div className="h-10 bg-gradient-to-r from-slate-900/95 via-gray-900/95 to-slate-950/95 backdrop-blur-xl text-cyan-300 text-xs flex items-center px-6 justify-between border-t border-cyan-500/10 shadow-[0_-20px_40px_rgba(6,182,212,0.1)] z-10 flex-shrink-0 relative overflow-hidden">
+  {/* Animated background effect */}
+  <div className="absolute inset-0 opacity-30">
+    <div className="absolute inset-0 bg-gradient-to-r from-cyan-500/10 via-purple-500/10 to-pink-500/10 animate-gradient-x"></div>
+  </div>
+  
+  {/* Glowing top border */}
+  <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-cyan-400 to-transparent"></div>
+  
+  {/* Left side items */}
+  <div className="flex items-center space-x-8 relative z-10">
+    {/* Session Status */}
+    <div className="flex items-center space-x-3 group cursor-pointer hover:scale-105 transition-transform">
+      <div className="relative">
+        <div className="h-3 w-3 rounded-full bg-gradient-to-r from-emerald-400 to-green-500 shadow-lg shadow-emerald-400/50"></div>
+        <div className="absolute inset-0 h-3 w-3 rounded-full bg-emerald-400 animate-ping"></div>
+      </div>
+      <div className="flex items-center space-x-2">
+        <span className="font-semibold text-gray-400 uppercase text-[10px] tracking-wider">SESSION</span>
+        <span className="text-cyan-400 font-mono bg-gradient-to-r from-gray-800/60 to-gray-900/60 px-3 py-1 rounded-md border border-cyan-500/20 shadow-inner">
+          #{activeSessionId.slice(0, 6)}
+        </span>
+      </div>
+    </div>
+    
+    {/* File Info with icon animation */}
+    <div className="flex items-center space-x-2 group cursor-pointer">
+      <div className="p-1.5 rounded-lg bg-gradient-to-br from-cyan-500/20 to-blue-500/20 group-hover:from-cyan-500/30 group-hover:to-blue-500/30 transition-all">
+        <svg className="w-3.5 h-3.5 text-cyan-400" fill="currentColor" viewBox="0 0 20 20">
+          <path fillRule="evenodd" d="M4 4a2 2 0 00-2 2v8a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-5L9 2H4z" clipRule="evenodd" />
+        </svg>
+      </div>
+      <span className="text-gray-300 font-medium group-hover:text-cyan-300 transition-colors">{selectedFile}</span>
+    </div>
+    
+    {/* Connection Status with better animation */}
+    <div className="flex items-center space-x-2">
+      <div className={`relative flex items-center justify-center w-8 h-8 rounded-lg ${
+        socket?.connected 
+          ? 'bg-gradient-to-br from-green-500/20 to-emerald-500/20' 
+          : 'bg-gradient-to-br from-red-500/20 to-orange-500/20'
+      }`}>
+        <svg className={`w-4 h-4 ${socket?.connected ? 'text-green-400' : 'text-red-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
+        </svg>
+        {socket?.connected && (
+          <div className="absolute inset-0 rounded-lg bg-green-400/20 animate-pulse"></div>
+        )}
+      </div>
+      <div className="flex flex-col">
+        <span className={`text-[10px] uppercase tracking-wider ${socket?.connected ? 'text-green-400' : 'text-red-400'}`}>
+          {socket?.connected ? 'CONNECTED' : 'OFFLINE'}
+        </span>
+        <span className="text-[9px] text-gray-500">Stable</span>
+      </div>
+    </div>
+  </div>
+  
+  {/* Center decorative element */}
+  <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-32 h-32 opacity-10">
+    <div className="w-full h-full rounded-full bg-gradient-to-r from-cyan-400 to-purple-400 blur-3xl"></div>
+  </div>
+  
+  {/* Right side items */}
+  <div className="flex items-center space-x-8 relative z-10">
+    {/* Participants with animated badge */}
+    <div className="flex items-center space-x-3">
+      <div className="flex -space-x-2">
+        {activeParticipants.slice(0, 3).map((_, i) => (
+          <div key={i} className="w-6 h-6 rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 border-2 border-gray-900 flex items-center justify-center text-[8px] font-bold text-white">
+            {i + 1}
           </div>
-          <span>{selectedFile}</span>
-          <span>Connected: {socket?.connected ? 'Yes' : 'No'}</span>
-        </div>
-        <div className="flex space-x-4">
-          <span>Participants: {activeParticipants.length}</span>
-          <span>UTF-8</span>
-          <span className="bg-clip-text text-transparent bg-gradient-to-r from-cyan-200 to-blue-200">
-            {currentLanguage === 'javascript' ? 'JavaScript' : 'Python'}
-          </span>
-        </div>
-      </div > */}
-      {/* Dialogs - Move these to the end, outside other containers */}
+        ))}
+        {activeParticipants.length > 3 && (
+          <div className="w-6 h-6 rounded-full bg-gradient-to-br from-purple-400 to-pink-500 border-2 border-gray-900 flex items-center justify-center text-[8px] font-bold text-white">
+            +{activeParticipants.length - 3}
+          </div>
+        )}
+      </div>
+      <div className="flex flex-col">
+        <span className="text-[10px] uppercase tracking-wider text-gray-400">ACTIVE</span>
+        <span className="text-cyan-400 font-bold text-sm">{activeParticipants.length} Users</span>
+      </div>
+    </div>
+    
+    {/* Language Badge with gradient */}
+    <div className="relative group cursor-pointer">
+      <div className={`
+        px-4 py-1.5 rounded-lg flex items-center space-x-2
+        bg-gradient-to-r ${currentLanguage === 'javascript' 
+          ? 'from-yellow-500/20 to-orange-500/20 border border-yellow-500/30' 
+          : 'from-blue-500/20 to-indigo-500/20 border border-blue-500/30'}
+        hover:scale-105 transition-all duration-300
+      `}>
+        <div className={`w-2.5 h-2.5 rounded-full ${
+          currentLanguage === 'javascript' ? 'bg-yellow-400' : 'bg-blue-400'
+        } shadow-lg`}></div>
+        <span className={`font-bold text-sm ${
+          currentLanguage === 'javascript' ? 'text-yellow-300' : 'text-blue-300'
+        }`}>
+          {currentLanguage === 'javascript' ? 'JavaScript' : 'Python'}
+        </span>
+      </div>
+    </div>
+    
+    {/* Modern Clock */}
+    <div className="flex items-center space-x-2 bg-gradient-to-r from-gray-800/40 to-gray-900/40 px-3 py-1.5 rounded-lg border border-gray-700/30">
+      <svg className="w-3.5 h-3.5 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+      <span className="text-cyan-300 font-mono font-medium">
+        {new Date().toLocaleTimeString('en-US', { 
+          hour: '2-digit', 
+          minute: '2-digit',
+          hour12: false 
+        })}
+      </span>
+    </div>
+  </div>
+  
+  {/* Bottom glow effect */}
+  <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-cyan-400/50 to-transparent blur-sm"></div>
+</div>
+
+{/* Add this CSS to your global styles or in a style tag */}
+<style jsx global>{`
+  @keyframes gradient-x {
+    0%, 100% {
+      transform: translateX(0%);
+    }
+    50% {
+      transform: translateX(-100%);
+    }
+  }
+  .animate-gradient-x {
+    animation: gradient-x 15s ease infinite;
+    background-size: 200% 200%;
+  }
+`}</style>
+
+    {/* Dialogs */}
     {showSessionEndDialog && (
       <SessionEndDialog 
         isOpen={showSessionEndDialog}
@@ -2590,6 +2774,7 @@ useEffect(() => {
         githubUser={githubUser}
         addToTerminal={(entry) => setTerminalOutput(prev => [...prev, entry])}
         prCommandHandler={prCommandHandler}
+        onNavigateHome={() => navigate('/')}
       />
     )}
     
@@ -2609,18 +2794,17 @@ useEffect(() => {
       />
     )}
 
-    {/* PR Review Panel */}
-{showPRReviewPanel && (
-  <PRReviewPanel 
-    isVisible={showPRReviewPanel}
-    onClose={() => setShowPRReviewPanel(false)}
-    addToTerminal={(entry) => setTerminalOutput(prev => [...prev, entry])}
-    sessionId={activeSessionId}
-    isHost={isUserHost}
-  />
-)}
+    {showPRReviewPanel && (
+      <PRReviewPanel 
+        isVisible={showPRReviewPanel}
+        onClose={() => setShowPRReviewPanel(false)}
+        addToTerminal={(entry) => setTerminalOutput(prev => [...prev, entry])}
+        sessionId={activeSessionId}
+        isHost={isUserHost}
+      />
+    )}
   </div>
-  );
+);
 };
 
 export default CodeEditorDashboard;
