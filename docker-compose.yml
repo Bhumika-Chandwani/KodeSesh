@@ -1,0 +1,9 @@
+version: '3.8'
+
+services:
+  kodesesh-frontend:
+    build: .
+    container_name: kodesesh-frontend
+    ports:
+      - "80:80"
+    restart: always
